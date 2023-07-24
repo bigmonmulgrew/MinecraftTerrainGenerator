@@ -1,118 +1,185 @@
 #!/bin/bash
 
-##constants
+## Constants
+#Time to sleep before checking CPU load again
+checkInterval=1
+#Number of units to move the player
+moveInterval=5
+#The unit size of a chunk
+chunkSize=16
+#Coordinates of the map origin
+originPoint="0,0"
+#The height of the player
+yHeight=200
+#The percentage of CPU usage before the next iteration runs, bear in mind 100% represents a single core, eg a 4 core CPU maxes out at 400%
+cpuThreshold=80
 
-#Only run when CPUn load drops below this percentage
-cpuLoadlimit=80
+## Startup Variables (including default values)
+#Default server name
+serverName="2023BigMonD"
+#Folder the server is stored in
+serverLocation="/opt/msm/servers/$serverName"
+#Name of the player to be moved.
+player="bigmonmulgrew"
+#Radius at the world origin, typically 0,0
+originRadius=250
+#Point of interest Radius
+poiRadius=250
 
-#Number of seconds to sleep before checking CPU load
-sleepTime=5
+targetString=""
+moveStep=0
 
-##Variables
-cpuLoad=5
-cpuLoopCount=0
-runLoop=true
-
-#The user to be moved around with the tp command to trigger map generation
-playerName="bigmonmulgrew"
-serverName="2022BigMonD"
-worldName="world"
-teleportHeight=90
-
-#Radius from spawn to pregenerate
-blockGenerationRadius=5000
-
-#Current search coordinates
-mapX=0
-mapZ=0
-
-#This is double the set view distance on the server.
-chunkViewDistance=10
-blockViewDistance=20
-moveSteps=20
-
-serverLocation="/opt/msm/servers/2022BigMonD"
-
-function CheckCPU
-{
-  cpuLoad=$(mpstat  1 1| grep -A 5 "%idle" | tail -n 1 | awk -F " " '{print 100 - $12}') 
+# This function is called when the script is run with the -h option,
+# or when an invalid option is given. It displays usage information
+# and the current configuration, then exits.
+usage() {
+  echo "Usage: $0 [-s serverName] [-r originRadius] [-R poiRadius] [-p player] [-t target] [-i moveInterval]"
+  echo
+  echo "Options:"
+  echo "  -s    Minecraft server name (default: $serverName)"
+  echo "  -r    origin radius (default: $originRadius)"
+  echo "  -R    Point of interest radius (default: $poiRadius)"
+  echo "  -p    Player name (default: $player)"
+  echo "  -t    Target coordinates as x,z pairs. Multiple pairs should be separated by a semicolon (default: $targetString)"
+  echo "  -i    Movement interval (default: $moveInterval)"
+  echo "  -h    Display this help message and current configuration"
+  echo
+  echo "Current Configuration:"
+  echo "  Server name: $serverName"
+  echo "  Origin radius: $originRadius"
+  echo "  POI radius: $poiRadius"
+  echo "  Player name: $player"
+  echo "  Y height: $yHeight"
+  echo "  Targets: $targetString"
+  echo "  CPU Threshold: $cpuThreshold"
+  echo "  Check Interval: $checkInterval"
+  echo "  Move Interval: $moveInterval"
+  exit 1
 }
 
-function TeleportPlayer
-{
-  radial_distance=`echo "scale=2; sqrt(($mapX*$mapX)+($mapZ*$mapZ))" | bc`
+getOptions() {
+  # Process command line options
+  while getopts ":s:r:R:p:t:i:h" opt; do
+    case $opt in
+      s) serverName="$OPTARG" ;;
+      r) originRadius="$OPTARG" ;;
+	  R) poiRadius="$OPTARG" ;;
+      p) player="$OPTARG" ;;
+      t) targetString="$OPTARG" ;;
+      i) moveInterval="$OPTARG" ;;
+      h) usage ;;
+      \?) echo "Invalid option -$OPTARG" >&2; usage ;;
+    esac
+  done
+}
+
+calculateVariables(){
+  #Calculate any variables automatically derived from provided options.
+  moveStep=$((moveInterval*chunkSize))
+}
+
+# Function to print key-value pairs
+print_setting() {
+    printf "%-18s %s\n" "$1:" "$2"
+}
+
+printSettings() {
+  # Summarize the settings used
+  print_setting 'Server Name' 		$serverName
+  print_setting 'Player Name' 		$player
+  print_setting 'Origin Radius'     $originRadius
+  print_setting 'POI Radius'        $poiRadius
+  print_setting 'Target Coordinates' $targetString
+  print_setting 'Y Height'      	$yHeight
+  print_setting 'CPU Threshold' 	$cpuThreshold
+  print_setting 'Check Interval' 	$checkInterval
+  print_setting 'Move Interval' 	$moveInterval
+}
+
+generateMap() {
+  #Loop through target list to generate the map
   
-  if [ "$(bc <<< "$radial_distance < $blockGenerationRadius+($moveSteps/2)")" == "1"  ];
+  #Generate the map at the origin (0,0)
+  generateTarget "0" "0" "${originRadius}"
+
+  # Convert the targetString to an array
+  IFS=";" read -ra target <<< "$targetString"
+  
+  # Loop through each target coordinate and generate the map at the targets
+  for coord in "${target[@]}"; do
+    echo "Next Target: $coord"
+    IFS="," read -r -a coords <<< "$coord"
+  
+    generateTarget "${coords[0]}" "${coords[1]}" "${poiRadius}"
+  done
+}
+
+generateTarget() {
+  #Generates the map at the given target.
+
+  local targetX=$1
+  local targetZ=$2
+  local r=$3
+ 
+  # Loop through each x coordinate in the radius
+  for ((x=-r; x<=r; x=x+moveStep)); do
+	
+    # Loop through each z coordinate in the radius
+    for ((z=-r; z<=r; z=z+moveStep)); do
+	  
+      # Wait until CPU usage falls below the threshold
+      waitForCPU
+
+      # Calculate the target coordinates and teleport the player
+      local xTarget=$(( targetX + x ))
+      local zTarget=$(( targetZ + z ))
+	  
+	  teleportPlayer  "${xTarget}" "${zTarget}" "${r}"
+	        
+    done
+  done
+}
+
+waitForCPU() {
+#Checks the CPU usage level and sleeps until it drops low enough
+  while true; do
+	cpuUsage=$(top -bn2 | grep '^%Cpu' | tail -n 1 | awk '{print $2+$4+$6}')
+	checkCPU=$(echo "$cpuUsage > $cpuThreshold" | bc)
+	if [ $checkCPU -eq 0 ]; then
+	  break
+	fi
+	echo -ne "CPU usage high, sleeping... : ${cpuUsage}%\r"
+	sleep $checkInterval
+  done
+}
+
+teleportPlayer() {
+  #Checks that the teleportation target is within the given radius and if so teleports the player
+  local tX=$1
+  local tZ=$2
+  local r=$3
+  
+  radial_distance=`echo "scale=2; sqrt(($tX*$tX)+($tZ*$tZ))" | bc`
+  
+  if [ "$(bc <<< "$radial_distance < $r+($moveStep/2)")" == "1"  ];
   then
-    formattedX=$(printf "%5s" $mapX)
-    formattedZ=$(printf "%5s" $mapZ)
-    echo "TPing $playerName to $formattedX :$formattedZ CPU load: $cpuLoad TP radius: $radial_distance"
-    sudo msm $serverName cmd tp $playerName $mapX $teleportHeight $mapZ > /dev/null
+    formattedX=$(printf "%5s" $tX)
+    formattedZ=$(printf "%5s" $tZ)
+    echo "TPing $player to $formattedX :$formattedZ TP radius: $radial_distance"
+    sudo msm $serverName cmd tp $player $tX $teleportHeight $tZ > /dev/null
   fi
 }
 
-function NextCoordinate
-{
-  if (( $(echo "$mapX < -$blockGenerationRadius" | bc -l) )); 
-  then
-    if (( $(echo "$mapZ < -$blockGenerationRadius" | bc -l) )); 
-    then
-      runLoop=false
-    else
-      mapZ=$(($mapZ-$moveSteps))
-    fi
-  mapX=$blockGenerationRadius
-  else
-    mapX=$(($mapX-$moveSteps))
-  fi
-  
-  
-}
-
-function GetViewRadius
-{
-  chunkViewDistance=$(grep -hr "view-distance" $serverLocation/server.properties | awk -F "=" '{print $2}' )
-  
-  blockViewDistance=$(($chunkViewDistance*16))
-  moveSteps=$(($blockViewDistance))
-  
-  echo "Server view distance set to $chunkViewDistance chunks, setting movement steps to $moveSteps blocks"
-}
-
-function printSettings
-{
-  echo "$(printf '%-15s' 'Server name:') $serverName"
-  echo "$(printf '%-15s' 'Server path:') $serverLocation"
-  echo "$(printf '%-15s' 'Player name:') $playerName"
-  echo "$(printf '%-15s' 'CPU load limit:') $cpuLoadlimit"
-  echo "$(printf '%-15s' 'Gen radius:') $blockGenerationRadius blocks"
-}
 ### Program execution Starts here ###
 
+#Get command line options
+getOptions
+
+#Calculate any variables derived automatically from options
+calculateVariables
+
+#Output the settings to the console.
 printSettings
-GetViewRadius
 
-mapX=$blockGenerationRadius
-mapZ=$blockGenerationRadius
-
-#Loop continuously until stopped
-while $runLoop;
-do
-  CheckCPU
-  
-  if [ "$(bc <<< "$cpuLoad < $cpuLoadlimit")" == "1"  ];
-  then
-    echo -ne "                                                          "\\r
-    cpuLoopCount=0
-        
-    TeleportPlayer
-    NextCoordinate
-    
-  else 
-    cpuLoopCount=$(($cpuLoopCount+1))
-    echo -ne "                                                          "\\r
-    echo -ne "CPU too busy, waiting. $cpuLoad. Wait count: $cpuLoopCount"\\r
-  fi
- 
-  sleep $sleepTime
-done
+#Generate the map
+generateMap
