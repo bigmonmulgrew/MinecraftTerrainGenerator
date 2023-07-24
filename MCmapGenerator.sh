@@ -40,7 +40,7 @@ usage() {
   echo "  -r    origin radius (default: $originRadius)"
   echo "  -R    Point of interest radius (default: $poiRadius)"
   echo "  -p    Player name (default: $player)"
-  echo "  -t    Target coordinates as x,z pairs. Multiple pairs should be separated by a semicolon (default: $targetString)"
+  echo "  -t    Target coordinates as x,z pairs. Multiple pairs should be separated by a semicolon (default is empty and only scans 0,0)"
   echo "  -i    Movement interval (default: $moveInterval)"
   echo "  -h    Display this help message and current configuration"
   echo
@@ -94,6 +94,7 @@ printSettings() {
   print_setting 'CPU Threshold' 	$cpuThreshold
   print_setting 'Check Interval' 	$checkInterval
   print_setting 'Move Interval' 	$moveInterval
+  echo " "
 }
 
 generateMap() {
@@ -107,7 +108,8 @@ generateMap() {
   
   # Loop through each target coordinate and generate the map at the targets
   for coord in "${target[@]}"; do
-    echo "Next Target: $coord"
+    echo " "
+	
     IFS="," read -r -a coords <<< "$coord"
   
     generateTarget "${coords[0]}" "${coords[1]}" "${poiRadius}"
@@ -121,20 +123,19 @@ generateTarget() {
   local targetZ=$2
   local r=$3
  
+  echo "Next Target: $targetX,$targetZ"
+ 
   # Loop through each x coordinate in the radius
   for ((x=-r; x<=r; x=x+moveStep)); do
 	
     # Loop through each z coordinate in the radius
     for ((z=-r; z<=r; z=z+moveStep)); do
 	  
-      # Wait until CPU usage falls below the threshold
-      waitForCPU
-
       # Calculate the target coordinates and teleport the player
       local xTarget=$(( targetX + x ))
       local zTarget=$(( targetZ + z ))
 	  
-	  teleportPlayer  "${xTarget}" "${zTarget}" "${r}"
+	  teleportPlayer  "${xTarget}" "${zTarget}" "${r}" "${targetX}" "${targetZ}" 
 	        
     done
   done
@@ -142,13 +143,18 @@ generateTarget() {
 
 waitForCPU() {
 #Checks the CPU usage level and sleeps until it drops low enough
-  while true; do
-	cpuUsage=$(top -bn2 | grep '^%Cpu' | tail -n 1 | awk '{print $2+$4+$6}')
+  while true; do    
+	cpuUsage=$(vmstat 1 2 | tail -1 | awk '{print $13+$14}')
 	checkCPU=$(echo "$cpuUsage > $cpuThreshold" | bc)
+	
 	if [ $checkCPU -eq 0 ]; then
 	  break
 	fi
+	
 	echo -ne "CPU usage high, sleeping... : ${cpuUsage}%\r"
+	# Manual flush
+	printf "%s" ""
+	
 	sleep $checkInterval
   done
 }
@@ -158,22 +164,33 @@ teleportPlayer() {
   local tX=$1
   local tZ=$2
   local r=$3
+  local oX=${4:-0}
+  local oZ=${5:-0}
+
+  local dX=$((tX-oX))
+  local dZ=$((tZ-oZ))
   
-  radial_distance=`echo "scale=2; sqrt(($tX*$tX)+($tZ*$tZ))" | bc`
+  radial_distance=`echo "scale=2; sqrt(($dX*$dX)+($dZ*$dZ))" | bc`
+  formattedX=$(printf "%5s" $tX)
+  formattedZ=$(printf "%5s" $tZ)
   
   if [ "$(bc <<< "$radial_distance < $r+($moveStep/2)")" == "1"  ];
   then
-    formattedX=$(printf "%5s" $tX)
-    formattedZ=$(printf "%5s" $tZ)
     echo "TPing $player to $formattedX :$formattedZ TP radius: $radial_distance"
-    sudo msm $serverName cmd tp $player $tX $teleportHeight $tZ > /dev/null
+	
+	# Wait until CPU usage falls below the threshold
+	waitForCPU
+	
+    sudo msm $serverName cmd tp $player $tX $yHeight $tZ > /dev/null
+  else
+    echo "TP to $formattedX :$formattedZ outside TP radius: $radial_distance"
   fi
 }
 
 ### Program execution Starts here ###
 
 #Get command line options
-getOptions
+getOptions "$@" # pass the command line arguments
 
 #Calculate any variables derived automatically from options
 calculateVariables
