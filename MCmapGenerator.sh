@@ -10,7 +10,7 @@ chunkSize=16
 #Coordinates of the map origin
 originPoint="0,0"
 #The height of the player
-yHeight=200
+yHeight=150
 #The percentage of CPU usage before the next iteration runs, bear in mind 100% represents a single core, eg a 4 core CPU maxes out at 400%
 cpuThreshold=80
 
@@ -182,6 +182,7 @@ teleportPlayer() {
 	waitForCPU
 	
     sudo msm $serverName cmd tp $player $tX $yHeight $tZ > /dev/null
+    sleep $checkInterval
   else
     echo "TP to $formattedX :$formattedZ outside TP radius: $radial_distance"
   fi
