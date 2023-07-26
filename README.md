@@ -38,6 +38,11 @@ The script uses the `/tp` command to teleport the player around the world, gener
 
 The teleportation is done in increments (`moveStep`), and the player is teleported to a new location only if the CPU usage of the server is below a certain threshold.
 
+## Editing 
+If you use something other than Minecraft server manager you will need to edit this line 
+sudo msm $serverName cmd tp $player $tX $yHeight $tZ > /dev/null
+To reflect your setup.
+
 ## Contributing
 
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
